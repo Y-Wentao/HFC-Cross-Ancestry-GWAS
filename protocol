@@ -1,0 +1,207 @@
+Protocols for study of
+Trans-ancestry concordance of hepatic fat genetic architecture validates the cardiometabolic criteria for metabolic dysfunction-associated steatotic liver disease
+
+Step 1: Ancestry-specific GWAS
+Tools: GCTA-fastGWA
+
+1.1 GWAS in the European population
+Four models were analyzed:
+PDFF
+PDFF_BMI_adjusted
+PDFF_WFM_adjusted
+PDFF_VAT_adjusted
+
+Imputed genotype dosages in BGEN format were used as input. Association analyses were performed using fastGWA mixed linear models with a sparse GRM.
+
+gcta64 --mbgen ${bgen_merge_list} --sample ${sample_file} --grm-sparse ${sparse_grm} --fastGWA-mlm --nofilter --pheno ${pheno_file} --mpheno 1 --qcovar ${qcovar_file} --covar ${covar_file} --thread-num 48 --out ${output_prefix}
+
+1.2 GWAS in the East Asian population
+Analyses were performed under unadjusted and BMI-adjusted models.
+
+Unadjusted model:
+LA_mean_log
+
+BMI-adjusted models:
+LA_mean_log
+LS_diff_log
+LS_ratio_log
+
+Imputed genotype dosages in BGEN format were used as input. Association analyses were performed using fastGWA mixed linear models with a sparse GRM.
+
+gcta64 --mbgen ${bgen_merge_list} --sample ${sample_file} --grm-sparse ${sparse_grm} --fastGWA-mlm --nofilter --pheno ${pheno_file} --mpheno ${phenotype_index} --qcovar ${qcovar_file} --thread-num 48 --out ${output_prefix}
+
+
+Step 2: Lead variant identification by LD clumping
+Tools: PLINK
+
+Lead variants were identified from ancestry-specific GWAS summary statistics using LD clumping. Clumping was performed separately for each phenotype and chromosome using ancestry-matched reference genotype data.
+
+Clumping criteria:
+Genome-wide significance threshold: P < 5e-8
+LD threshold: r2 < 0.01
+Window size: 500 kb
+
+2.1 Clumping in the European population
+Phenotypes:
+PDFF
+PDFF_BMI_adjusted
+PDFF_WFM_adjusted
+PDFF_VAT_adjusted
+
+plink --bfile ${reference_chr} --clump-p1 5e-8 --clump-p2 5e-8 --clump-r2 0.01 --clump-kb 500 --clump ${gwas_summary_statistics} --clump-snp-field SNP --clump-field P --memory 50000 --out ${output_prefix}
+
+2.2 Clumping in the East Asian population
+Phenotypes:
+LA_mean_log
+LS_diff_log
+LS_ratio_log
+
+plink --bfile ${reference_chr} --clump-p1 5e-8 --clump-p2 5e-8 --clump-r2 0.01 --clump-kb 500 --clump ${gwas_summary_statistics} --clump-snp-field SNP --clump-field P --memory 50000 --out ${output_prefix}
+
+
+Step 3: Trans-ancestry meta-analysis
+Tools: METAL
+
+A fixed-effects inverse-variance-weighted meta-analysis was performed using METAL. The METAL command file was first written as a text file and then executed in batch mode.
+
+METAL command file:
+MARKER   SNP
+SCHEME   STDERR
+AVERAGEFREQ   ON
+FREQLABEL   AF1
+ALLELE   A1 A2
+EFFECT   BETA
+PVALUE   P
+STDERR   SE
+PROCESS   ${EAS_GWAS_summary_statistics}
+PROCESS   ${EUR_GWAS_summary_statistics}
+OUTFILE   ${output_prefix} .TBL
+ANALYZE   HETEROGENEITY
+Quit
+
+printf "%s" "$meta_cmd" > "${metal_command_file}"
+
+METAL execution:
+metal ${metal_command_file}
+
+
+Step 4: Trans-ancestry genetic effect correlation
+Tools: Popcorn
+
+The global trans-ancestry genetic effect correlation was estimated using Popcorn based on summary statistics from the East Asian and European GWAS.
+
+popcorn fit -v 2 --cfile ${cross_population_score_file} --sfile1 ${EUR_summary_statistics} --sfile2 ${EAS_summary_statistics} --gen_effect ${output_file}
+
+
+Step 5: Alcohol-stratified GWAS
+Tools: GCTA-fastGWA
+
+To assess the impact of alcohol consumption on genetic heterogeneity, GWAS was repeated in the European population after stratification by drinking status.
+
+Drinking groups:
+never drinkers
+light-to-moderate drinkers
+heavy drinkers
+
+Association analyses were performed using fastGWA mixed linear models with the same phenotype and covariate settings as in the main European GWAS, while restricting the analysis to each subgroup separately.
+
+gcta64 --mbgen ${bgen_merge_list} --sample ${sample_file} --grm-sparse ${sparse_grm} --fastGWA-mlm --nofilter --pheno ${pheno_file} --mpheno 1 --qcovar ${qcovar_file} --covar ${covar_file} --keep ${subgroup_sample_file} --thread-num 48 --out ${output_prefix}
+
+
+Step 6: Genetic correlation analysis
+Tools: LDSC
+
+Genetic correlations between hepatic fat content and cardiometabolic risk factors were estimated using linkage disequilibrium score regression. Analyses were performed separately in each ancestry using ancestry-matched LD score reference panels.
+
+Cardiometabolic traits included:
+BMI
+GLU
+HbA1c
+SBP
+DBP
+TC
+TG
+HDL-C
+LDL-C
+Urate
+
+ldsc.py --ref-ld-chr ${ldscore_reference} --w-ld-chr ${ldscore_reference} --rg ${HFC_sumstats},${CMRF_sumstats_1},${CMRF_sumstats_2},${CMRF_sumstats_3},${CMRF_sumstats_4},${CMRF_sumstats_5},${CMRF_sumstats_6},${CMRF_sumstats_7},${CMRF_sumstats_8},${CMRF_sumstats_9},${CMRF_sumstats_10} --out ${output_prefix}
+
+
+Step 7: Cell-type enrichment analysis
+Tools: scDRS
+
+Cell-type enrichment analysis was performed using scDRS with human single-cell RNA-seq reference data. Gene sets derived from hepatic fat GWAS were used to compute disease relevance scores across cell types.
+
+scdrs compute-score --h5ad-file ${single_cell_reference} --h5ad-species human --cov-file ${covariate_file} --gs-file ${gene_set_file} --gs-species human --ctrl-match-opt mean_var --weight-opt vs --adj-prop None --flag-filter-data True --flag-raw-count True --n-ctrl 1000 --flag-return-ctrl-raw-score False --flag-return-ctrl-norm-score True --out-folder ${output_folder}
+
+
+Step 8: Polygenic risk score construction
+Tools: PLINK, BOLT-LMM, GCTA-COJO
+
+8.1 Genome-wide PRS
+HapMap3 variants were first extracted from the European genotype data and used as the model SNP set for BOLT-LMM. Joint effect estimates were then obtained with the predBetasFile option and used as SNP weights for PRS calculation.
+
+bolt --bed=${bed_files} --bim=${bim_files} --fam=${fam_file} --maxMissingPerSnp 1.0 --maxMissingPerIndiv 1.0 --modelSnps=${hapmap3_snp_list} --geneticMapFile=${genetic_map_file} --covarFile=${covar_file} --qCovarCol=${covariates} --phenoFile=${pheno_file} --phenoCol=PDFF --LDscoresFile=${ldscore_file} --LDscoresMatchBp --lmm --numThreads=6 --verboseStats --covarMaxLevels=30 --maxModelSnps=1500000 --statsFile=${stats_file} --predBetasFile=${predbeta_file}
+
+PRS calculation was then performed chromosome by chromosome using PLINK score, followed by summation across chromosomes and Z-score standardization.
+
+plink --bfile ${target_genotype_chr} --extract ${predbeta_file} --score ${predbeta_file} 1 5 7 sum --keep ${target_sample_file} --out ${output_prefix} --memory 8000 --allow-no-sex
+
+8.2 Oligogenic PRS
+Previously identified lead SNPs were extracted, and conditional joint analysis was performed using GCTA-COJO to obtain an independent SNP set and corresponding joint effect estimates. These SNPs were then used to construct the oligogenic PRS.
+
+gcta64 --bfile ${reference_bfile} --cojo-file ${cojo_summary_file} --cojo-joint --cojo-collinear 0.95 --out ${output_prefix}
+
+
+Step 9: Cross-ancestry PRS integration
+Tools: PRS-CSx
+
+PRS-CSx was used to integrate summary statistics from the European and East Asian GWAS. A grid search over different global shrinkage parameters was performed chromosome by chromosome.
+
+python PRScsx.py --ref_dir=${reference_panel} --bim_prefix=${target_bfile_prefix} --sst_file=${EUR_sumstats},${EAS_sumstats} --n_gwas=${N_EUR},${N_EAS} --pop=EUR,EAS --phi=${phi} --chrom=${chr} --seed=42 --out_dir=${output_dir} --out_name=${output_name}
+
+
+Step 10: PRS performance evaluation
+Tools: R
+
+The predictive performance of PRSs was evaluated using logistic regression models adjusted for age, sex, and the top 10 genetic principal components.
+
+In the European population, the following outcomes were analyzed:
+MASLD
+Cirrhosis
+Alcoholic cirrhosis
+Broad cirrhosis
+HCC
+Liver-related death
+
+In the Chinese population, only MASLD was analyzed.
+
+The following PRSs were compared:
+PRS_HFC_1.2M
+PRS_HFC_58
+PRS_HCC_5
+PRS_NAFLD_17
+PRS_NAFLD_68
+PRS_cALT_77
+
+For each outcome, a baseline model including covariates only was fitted first. Then, each PRS was added separately to the baseline model. PRSs were standardized before analysis.
+
+glm(outcome ~ covariates, family=binomial)
+glm(outcome ~ PRS + covariates, family=binomial)
+
+The following metrics were calculated:
+OR per standard deviation
+AUC
+Delta AUC compared with the baseline model
+95% CI and P value for Delta AUC using DeLong test
+Nagelkerke’s pseudo-R2
+Net reclassification improvement (NRI)
+
+roc(model$y, fitted(model))
+roc.test(roc_prs, roc_base, method="delong")
+nribin(event=outcome, p.std=fitted(base_model), p.new=fitted(prs_model), updown="diff", cut=0, niter=0)
+
+Risk stratification analysis was additionally performed by dividing individuals into PRS deciles. Odds ratios were estimated for each decile using the bottom decile as the reference group. The top 5% and top 1% of the PRS distribution were further compared against the bottom 10%.
+
+glm(outcome ~ prs_group + covariates, family=binomial)

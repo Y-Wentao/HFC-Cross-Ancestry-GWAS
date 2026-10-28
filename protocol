@@ -79,8 +79,6 @@ OUTFILE   ${output_prefix} .TBL
 ANALYZE   HETEROGENEITY
 Quit
 
-printf "%s" "$meta_cmd" > "${metal_command_file}"
-
 METAL execution:
 metal ${metal_command_file}
 
@@ -135,6 +133,7 @@ Cell-type enrichment analysis was performed using scDRS with human single-cell R
 
 scdrs compute-score --h5ad-file ${single_cell_reference} --h5ad-species human --cov-file ${covariate_file} --gs-file ${gene_set_file} --gs-species human --ctrl-match-opt mean_var --weight-opt vs --adj-prop None --flag-filter-data True --flag-raw-count True --n-ctrl 1000 --flag-return-ctrl-raw-score False --flag-return-ctrl-norm-score True --out-folder ${output_folder}
 
+scdrs perform-downstream --h5ad-file ${single_cell_reference} --score-file "${output_folder}/@.full_score.gz" --group-analysis ${cell_type_column} --flag-filter-data True --flag-raw-count True --out-folder ${downstream_output_folder}
 
 Step 8: Polygenic risk score construction
 Tools: PLINK, BOLT-LMM, GCTA-COJO
@@ -162,46 +161,51 @@ PRS-CSx was used to integrate summary statistics from the European and East Asia
 python PRScsx.py --ref_dir=${reference_panel} --bim_prefix=${target_bfile_prefix} --sst_file=${EUR_sumstats},${EAS_sumstats} --n_gwas=${N_EUR},${N_EAS} --pop=EUR,EAS --phi=${phi} --chrom=${chr} --seed=42 --out_dir=${output_dir} --out_name=${output_name}
 
 
-Step 10: PRS performance evaluation
-Tools: R
+Step 10: PRS evaluation of diagnostic status (case-control framework)
+Tools: R (stats, pROC, nricens)
 
-The predictive performance of PRSs was evaluated using logistic regression models adjusted for age, sex, and the top 10 genetic principal components.
+This analysis evaluates diagnostic status, not future disease prediction from a disease-free baseline. UKB status uses diagnoses recorded by the administrative cutoff; HOPE status uses the baseline examination. The six UKB outcomes are MASLD, cirrhosis, alcoholic cirrhosis, broad cirrhosis, HCC and liver-related death. HOPE evaluates baseline MASLD only. Report outcome-specific evaluable sample sizes, not a single denominator for all diseases.
 
-In the European population, the following outcomes were analyzed:
-MASLD
-Cirrhosis
-Alcoholic cirrhosis
-Broad cirrhosis
-HCC
-Liver-related death
+Compare PRS_HFC_1.2M, PRS_HFC_58, PRS_HCC_5, PRS_NAFLD_17, PRS_NAFLD_68 and PRS_cALT_77. The base model includes age, sex and the first ten genetic PCs. Add each standardized PRS separately. Use the same complete analysis set for every model in a given paired comparison; do not let glm silently compare predictions from different participants.
 
-In the Chinese population, only MASLD was analyzed.
+# R example; dat_status is the preassembled common analysis set for one binary outcome.
+covariates <- c("age", "sex", paste0("PC", 1:10))
+prs_names <- c("PRS_HFC_1.2M", "PRS_HFC_58", "PRS_HCC_5", "PRS_NAFLD_17", "PRS_NAFLD_68", "PRS_cALT_77")
+stopifnot(all(complete.cases(dat_status[, c("outcome", covariates, prs_names)])),
+          all(dat_status$outcome %in% 0:1))
+base_model <- glm(reformulate(covariates, response = "outcome"),
+                  data = dat_status, family = binomial(), na.action = na.fail)
+dat_status$PRS_bolt <- as.numeric(scale(dat_status$PRS_bolt))
+prs_model <- glm(reformulate(c(covariates, "PRS_bolt"), response = "outcome"),
+                 data = dat_status, family = binomial(), na.action = na.fail)
+roc_base <- pROC::roc(dat_status$outcome, fitted(base_model), levels = c(0, 1), direction = "<")
+roc_prs <- pROC::roc(dat_status$outcome, fitted(prs_model), levels = c(0, 1), direction = "<")
+pROC::roc.test(roc_prs, roc_base, paired = TRUE, method = "delong")
+nricens::nribin(event = dat_status$outcome, p.std = fitted(base_model),
+               p.new = fitted(prs_model), updown = "diff", cut = 0, niter = 0)
 
-The following PRSs were compared:
-PRS_HFC_1.2M
-PRS_HFC_58
-PRS_HCC_5
-PRS_NAFLD_17
-PRS_NAFLD_68
-PRS_cALT_77
+Repeat the PRS-inclusive model for each score. Report OR per SD, AUC, paired delta AUC with DeLong CI/P, Nagelkerke pseudo-R2, and continuous NRI. The niter = 0 NRI call does not generate bootstrap uncertainty.
+For diagnostic-status stratification, compare D2–D10 with D1 and compare top 5%/top 1% with the bottom 10%, using separate categorical contrasts and the same covariates. These comparisons are different from the bottom-80% reference used for progression.
 
-For each outcome, a baseline model including covariates only was fitted first. Then, each PRS was added separately to the baseline model. PRSs were standardized before analysis.
 
-glm(outcome ~ covariates, family=binomial)
-glm(outcome ~ PRS + covariates, family=binomial)
+Step 11: UKB incident MASLD prediction
+Tools: R (survival, riskRegression)
 
-The following metrics were calculated:
-OR per standard deviation
-AUC
-Delta AUC compared with the baseline model
-95% CI and P value for Delta AUC using DeLong test
-Nagelkerke’s pseudo-R2
-Net reclassification improvement (NRI)
+Exclude participants with missing/excluded NAFLD status, a recorded MASLD diagnosis on or before recruitment, or no positive follow-up time. Use recruitment as time zero. Event time is the first recorded diagnosis; non-cases are censored at the earlier death/administrative date already encoded in NAFLD_time. Do not classify early-censored participants as known disease-free controls at a fixed horizon.
 
-roc(model$y, fitted(model))
-roc.test(roc_prs, roc_base, method="delong")
-nribin(event=outcome, p.std=fitted(base_model), p.new=fitted(prs_model), updown="diff", cut=0, niter=0)
+Compare a clinical Cox model with clinical + one PRS at a time. Clinical variables are age, sex, BMI, mean SBP, mean DBP, HbA1c, glucose, diabetes history, TG, HDL-C, ALT, AST and alcohol_g, plus PC1–PC10.
 
-Risk stratification analysis was additionally performed by dividing individuals into PRS deciles. Odds ratios were estimated for each decile using the bottom decile as the reference group. The top 5% and top 1% of the PRS distribution were further compared against the bottom 10%.
+Use five event-stratified folds. Estimate clinical imputation medians and all standardization parameters in each training fold and apply them to its held-out fold. Pool one out-of-fold (OOF) prediction per participant; do not average five separately calculated AUCs/C-indices.
 
-glm(outcome ~ prs_group + covariates, family=binomial)
+Report IPCW time-dependent AUC and Brier score at 5 and 10 years using Score(), with each metric's native 95% CI. Use 2,000 paired participant bootstrap samples for delta AUC and delta Brier, fixing OOF predictions and re-estimating censoring KM in every sample. Use percentile intervals and a two-sided normal approximation based on the bootstrap SE. Report one full-follow-up Harrell C-index per model, using the OOF 10-year absolute risk only as a common ranking score. Mortality is censored in this incident analysis.
+
+Step 12: UKB progression after MASLD diagnosis
+Tools: R (cmprsk)
+
+Use participants with any recorded MASLD diagnosis, with follow-up starting at the first diagnosis. Analyze cirrhosis, HCC and liver-related death separately. Exclude the corresponding outcome occurring on/before the first MASLD diagnosis, unknown target status and nonpositive follow-up.
+
+Use the complete follow-up through 31 October 2022. The 5/10-year values are reporting landmarks, not maximum follow-up limits. Define 0=censored, 1=target event, 2=non-liver-related death before the target event. For cirrhosis/HCC, liver-related death before diagnosis is censored. 
+
+Fix PRS thresholds from the entire incident-prediction population: bottom 80% is the reference, and top 20%, 10%, 5% and 1% are compared separately. Top groups are nested but each is disjoint from its bottom-80% reference. Do not recalculate percentile thresholds in the MASLD subgroup.
+
+Estimate CIF/Aalen variance with cuminc(), bounded log-log pointwise CIs, full-follow-up Gray tests, and a Fine-Gray model with only a top-group indicator and group-specific censoring distributions. No age or clinical adjustment is included in these progression comparisons.
